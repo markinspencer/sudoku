@@ -1,6 +1,15 @@
 #include <windows.h>
+#include <stdbool.h>
 
-HWND NewWindowHandle(HINSTANCE instance, LPCSTR className) 
+#define internal static
+#define local_persist static
+#define global_variable static
+
+//TODO(spencer): Remove this from global scope
+global_variable bool running;
+ 
+internal HWND 
+NewWindowHandle(HINSTANCE instance, LPCSTR className) 
 {
 	return CreateWindowEx(
 			0,
@@ -17,7 +26,8 @@ HWND NewWindowHandle(HINSTANCE instance, LPCSTR className)
 			0);	
 }
 
-void DrawToWindow(HWND window) 
+internal void 
+DrawToWindow(HWND window) 
 {
 	PAINTSTRUCT paint;
 	HDC device_context = BeginPaint(window, &paint);
@@ -46,14 +56,19 @@ MainWindowCallback(
 		case WM_SIZE: 
 			OutputDebugString("WM_SIZE\n");
 			break;
-		case WM_DESTROY:
-			OutputDebugString("WM_DESTROY\n");
+		case WM_CLOSE: 
+			//TODO(spencer): Handle this with a message to the user?
+			running = false;
 			break;
 		case WM_ACTIVATEAPP:
 			OutputDebugString("WM_ACTIVATEAPP\n");
 			break;
 		case WM_PAINT:
 			DrawToWindow(window);
+			break;
+		case WM_DESTROY:
+			//TODO(spencer): Handle this as an error - recreate window?
+			running = false;
 			break;
 		default:
 			result = DefWindowProc(window, message, w_param, l_param);
@@ -82,8 +97,9 @@ WinMain(
 		HWND window_handle = NewWindowHandle(instance, window_class.lpszClassName);
 
 		if(window_handle) {
-			MSG message;
-			for(;;) {
+			running = true;
+			while(running) {
+				MSG message;
 				BOOL message_result = GetMessage(&message, 0 ,0 ,0);
 
 				if(message_result > 0) {
