@@ -6,74 +6,102 @@
 #define local_persist static
 #define global_variable static
 
+typedef struct 
+{
+	BITMAPINFO info;
+	void *memory;
+	int width;
+	int height;
+	int pitch;
+	int bytesPerPixel;
+} Win32OffscreenBuffer;
+
+typedef struct  
+{
+	int width;
+	int height;
+} Win32WindowDimension;
+
 //TODO(spencer): Remove this from global scope
 global_variable bool RUNNING;
-global_variable void *BITMAP_MEMORY;
-global_variable BITMAPINFO BITMAP_INFO;
-global_variable int BITMAP_WIDTH;
-global_variable int BITMAP_HEIGHT;
-global_variable int BYTES_PER_PIXEL = 4;
+global_variable Win32OffscreenBuffer GLOBAL_BACK_BUFFER;
+
+internal Win32WindowDimension
+GetWindowDimension(HWND window) 
+{
+	Win32WindowDimension dimension;
+	RECT client_rect;
+	GetClientRect(window, &client_rect);
+
+	dimension.width = client_rect.right - client_rect.left;
+	dimension.height = client_rect.bottom - client_rect.top;
+
+	return dimension;
+}
 
 internal void
-RenderGradient(int x_offset, int y_offset) 
+RenderGradient(Win32OffscreenBuffer buffer, int blue_offset, int green_offset) 
 {
-	int width = BITMAP_WIDTH;
-	int height = BITMAP_HEIGHT;
+	int width = buffer.width;
+	int height = buffer.height;
 
-	int pitch = width * BYTES_PER_PIXEL;
-	uint8_t *row = (uint8_t *)BITMAP_MEMORY;
+	uint8_t *row = (uint8_t *)buffer.memory;
 	for (int y = 0; y < height; ++y) {
 		uint32_t *pixel = (uint32_t *)row;
 		
 		for (int x = 0; x < width; ++x) {
-			uint8_t blue = (x + x_offset);
-			uint8_t green = (y + y_offset);
+			uint8_t blue = (x + blue_offset);
+			uint8_t green = (y + green_offset);
 			
 			*pixel++ = ((green << 8) | blue);
 		}
 
-		row += pitch;
+		row += buffer.pitch;
 	}
 }
 
 internal void
-Win32ResizeDIBSection(int width, int height)
+Win32ResizeDIBSection(Win32OffscreenBuffer *buffer, int width, int height)
 {
-
-	if(BITMAP_MEMORY) {
-		VirtualFree(BITMAP_MEMORY, 0, MEM_RELEASE);
+	if(buffer->memory) {
+		VirtualFree(buffer->memory, 0, MEM_RELEASE);
 	}
 	
-	BITMAP_WIDTH = width;
-	BITMAP_HEIGHT = height;
+	buffer->width = width;
+	buffer->height = height;
+	buffer->bytesPerPixel = 4;
  
-	BITMAP_INFO.bmiHeader.biSize = sizeof(BITMAP_INFO.bmiHeader);
-	BITMAP_INFO.bmiHeader.biWidth = BITMAP_WIDTH;
-	BITMAP_INFO.bmiHeader.biHeight = -BITMAP_HEIGHT;
-	BITMAP_INFO.bmiHeader.biPlanes = 1;
-	BITMAP_INFO.bmiHeader.biBitCount = 32;
-	BITMAP_INFO.bmiHeader.biCompression = BI_RGB;
-	BITMAP_INFO.bmiHeader.biSizeImage = 8;
+	buffer->info.bmiHeader.biSize = sizeof(buffer->info.bmiHeader);
+	buffer->info.bmiHeader.biWidth = width;
+	buffer->info.bmiHeader.biHeight = -height;
+	buffer->info.bmiHeader.biPlanes = 1;
+	buffer->info.bmiHeader.biBitCount = 32;
+	buffer->info.bmiHeader.biCompression = BI_RGB;
+	buffer->info.bmiHeader.biSizeImage = 8;
 
-	int bitmap_memory_size = (BITMAP_WIDTH * BITMAP_HEIGHT) * BYTES_PER_PIXEL;
+	int bitmap_memory_size = (buffer->width * buffer->height) * buffer->bytesPerPixel;
 	
-	BITMAP_MEMORY = VirtualAlloc(0, bitmap_memory_size, MEM_COMMIT, PAGE_READWRITE);
+	buffer->memory = VirtualAlloc(0, bitmap_memory_size, MEM_COMMIT, PAGE_READWRITE);
+	buffer->pitch = buffer->width * buffer->bytesPerPixel;
 
 	// TODO(spencer): clear to black
 }
 
 internal void
-Win32UpdateWindow(HDC device_context, RECT *client_rect, int x, int y, int width, int height)
+Win32CopyBufferToWindow(
+	HDC device_context, 
+	Win32OffscreenBuffer buffer, 
+	int x, 
+	int y,
+	int width,
+	int height)
 {
-	int window_width = client_rect -> right - client_rect -> left;
-	int window_height = client_rect -> bottom - client_rect -> top;
-
 	StretchDIBits(
 		device_context,
-		0, 0, BITMAP_WIDTH, BITMAP_HEIGHT,
-		0, 0, window_width, window_height,
-		BITMAP_MEMORY,
-		&BITMAP_INFO,
+		0, 0, buffer.width, buffer.height,
+		0, 0, width, height,
+		buffer.memory,
+		&buffer.info,
 		DIB_RGB_COLORS, 
 		SRCCOPY);
 }
@@ -105,14 +133,10 @@ Win32MainWindowCallback(
 {
 	LRESULT result;
 
-	switch (message)
-	{
+	switch (message) {
 		case WM_SIZE: {
-			RECT client_rect;
-			GetClientRect(window, &client_rect);
-			int width = client_rect.right - client_rect.left;
-			int height = client_rect.bottom - client_rect.top;
-			Win32ResizeDIBSection(width, height);
+			Win32WindowDimension dimension = GetWindowDimension(window);
+			Win32ResizeDIBSection(&GLOBAL_BACK_BUFFER, dimension.width, dimension.height);
 			break;
 		}
 		case WM_CLOSE: {
@@ -129,13 +153,16 @@ Win32MainWindowCallback(
 			HDC device_context = BeginPaint(window, &paint);
 			int x = paint.rcPaint.left;
 			int y = paint.rcPaint.top;
-			LONG width = paint.rcPaint.right - paint.rcPaint.left;
-			LONG height = paint.rcPaint.bottom - paint.rcPaint.top;
-
-			RECT client_rect;
-			GetClientRect(window, &client_rect);
-
-			Win32UpdateWindow(device_context, &client_rect, x, y, width, height);
+			
+			Win32WindowDimension dimension = GetWindowDimension(window);
+			
+			Win32CopyBufferToWindow(
+				device_context, 
+				GLOBAL_BACK_BUFFER, 
+				x, 
+				y, 
+				dimension.width, 
+				dimension.height);
 
 			EndPaint(window, &paint);
 			break;
@@ -164,7 +191,7 @@ WinMain(
 
 	WNDCLASS window_class = {0};
 
-	window_class.style = CS_OWNDC|CS_HREDRAW|CS_VREDRAW;
+	window_class.style = CS_HREDRAW|CS_VREDRAW;
 	window_class.lpfnWndProc = Win32MainWindowCallback;
 	window_class.hInstance = instance;
 	window_class.lpszClassName = "SudokuClass";
@@ -177,7 +204,6 @@ WinMain(
 			int y_offset = 0;
 			RUNNING = true;
 			while (RUNNING)	{
-				
 				MSG message;
 				
 				while (PeekMessage(&message, 0, 0, 0, PM_REMOVE)) {
@@ -189,14 +215,17 @@ WinMain(
 					DispatchMessage(&message);
 				}
 				
-				RenderGradient(x_offset, y_offset);
+				RenderGradient(GLOBAL_BACK_BUFFER, x_offset, y_offset);
 				HDC device_context = GetDC(window);
-				RECT client_rect;
-				GetClientRect(window, &client_rect);
-				int window_width = client_rect.right - client_rect.left;
-				int window_height = client_rect.bottom - client_rect.top;
+				Win32WindowDimension dimension = GetWindowDimension(window);
 
-				Win32UpdateWindow(device_context, &client_rect, 0, 0, window_width, window_height);
+				Win32CopyBufferToWindow(
+					device_context, 
+					GLOBAL_BACK_BUFFER, 
+					0, 
+					0, 
+					dimension.width, 
+					dimension.height);
 
 				ReleaseDC(window, device_context);
 				++x_offset;
